@@ -1,0 +1,128 @@
+#! /usr/bin/env bash
+
+set -euo pipefail
+
+readonly CMD="${0##*/}"
+readonly VERSION="0.1"
+readonly status_file="/var/lib/tersync/status"
+
+SHORT_USAGE() {
+  echo "Usage: $CMD OPTIONS name"
+}
+
+USAGE() {
+  cat <<-EOF
+    SHORT_USAGE
+    Options:
+      -A TYPE
+            Type of backup, local or remote backup.
+      -d DST DIR/HOST
+            Destination directory/host.
+      --daemon
+            Set as daemon.
+      -D SYNC-NAME
+            Terminates and deletes SYNC-NAME syncing process.
+      -s SOURCE
+            Source directory/file to be backed up.
+
+    Example:
+      $CMD -A local -s /local/dir -d /dest/dir "Backup-Local"
+      $CMD -A remote -s /local/dir -d 192.168.1.1:/dst/dir "ScriptBackup"
+
+      $CMD -D Backup-Local
+EOF
+}
+
+VERSION() {
+  echo "$CMD v$VERSION"
+  exit
+}
+
+msg_error() {
+  echo "$#" >&2
+  exit 1
+}
+
+run() {
+  echo "Run"
+  # Initial backup
+  rsync -avz ${append:-} ${delete:-} "$source_dir" "$destination"
+  while inotifywait -r -e create,delete,modify "$source_dir"; do
+    rsync -avz ${append:-} ${delete:-} "$source_dir" "$destination"
+  done & 
+
+  pid="$!"
+  return
+}
+
+addpid_status() {
+  sed -i "/$name/ s/x/$pid/" "$status_file"
+  return
+}
+
+save_status() {
+  tee -a "$status_file" <<<"$name:x:$source_dir:$destination:${mode:-normal}" >&3
+  return
+}
+
+check_status() {
+  create_status
+  # Solution 1
+  while IFS=: read -r line; do
+    local current_name=$(awk '{print $1}' <<<"$line")
+    local current_src=$(awk '{print $3}' <<<"$line")
+    local current_dst=$(awk '{print $4}' <<<"$line")
+
+    if [ "$current_name" = "$name" ]; then
+      msg_error "Cannot use $name as it already exists."
+    fi
+
+    if [ "$current_src" = "$source_dir" ] && [ "$current_dst" = "$destination" ]; then
+      msg_error "Duplicate backup sync. Exiting"
+    fi
+  done <$(tail -n +2 $status_file)
+
+  # Solution 2
+  local statuses=$(tail -n +2 $status_file)
+  if grep -q "$name" <<<"$statuses"; then
+    msg_error "Duplicate name found. Exiting"
+  fi
+
+  if grep -q "$source_dir" <<<"$statuses" && grep -q "$destination" <<<"$statuses"; then
+    msg_error "Duplicate backup sync. Exiting"
+  fi
+
+  return
+}
+
+create_status() {
+  echo "Create status file"
+  [ ! -f "$status_file" ] && tee "$status_file" <<<"$CMD v$VERSION" > /dev/null
+  return
+}
+
+delete() {
+  echo "Delete backup process."
+  if ! grep -q "$name" "$status_file"; then
+    msg_error "No sync process with name: $name"
+  fi
+
+  pid=$(grep "$name" "$status_file" | cut -d: -f2)
+  kill -SIGTERM "$pid"
+
+  grep -v "$name" "$status_file" | tee "$status_file.tmp" > /dev/null
+  rm -f "$status_file" && mv "$status_file.tmp" "$status_file"
+  return
+}
+
+main() {
+  echo "Main"
+  # Create /var/lib/tersync directory
+  mkdir -p "${status_file%/*}"
+  check_status
+  save_status
+  run
+  addpid_status
+}
+
+main $#
