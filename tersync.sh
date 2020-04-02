@@ -2,9 +2,25 @@
 
 readonly cmd="${0##*/}"
 readonly terfile_file="Terfile.ini"
-readonly status_file="/var/lib/tersync/status"
+readonly status_file="status"
+#readonly status_file="/var/lib/tersync/status"
 
-function __usage_help() {
+__arg_source=0
+__arg_dest=0
+__arg_name=0
+__arg_exlude=0
+
+opt_append=0
+opt_daemon=0
+opt_delete=0
+opt_modify=0
+opt_exclude=""
+dry_run=0
+verbose=0
+inotifyOpts=("create")
+__checkProcessyncOpts=()
+
+function __usage_help {
 	cat <<-EOF | less
 	$cmd
 
@@ -18,10 +34,14 @@ function __usage_help() {
 	  $cmd unsync Frontend-Sync
 		
 	COMMANDS:
-  sync [-s <source>] [-d <dst>] [-n <name>] ...
-      Start sync
+  add [-s <source>] [-d <dst>] [-n <name>] ...
+      Add a sync to sync entry
+  sync [name]
+      Start a specified sync
   unsync [name]
-      Unsync a running sync
+      Remove a sync from sync list
+  stop [name]
+      Stop a running sync
   list
       List running syncs
   mkconfig
@@ -56,7 +76,20 @@ function __usage_help() {
   exit 0
 }
 
-function get_value() {
+function __usage_add {
+  cat <<EOF
+  add
+EOF
+  exit 0
+}
+
+function msg_error { echo "[x] $@" >&2; exit 1; }
+
+function msg_info { echo "[i] $@" >&2; }
+
+function msg_success { echo "[v] $@" >&2; }
+
+function get_value {
   key="$1"
   mandatory=${3:-0}
   value="$(sed -n "s/.*$key *= *\([^ ]*.*\)/\1/p" $terfile_file | tr -d ' ')"
@@ -69,12 +102,13 @@ function get_value() {
   echo "$value"
 }
 
-function msg_error() {
-  echo "$@" >&2
-  exit 1
+function get_valueJson {
+  local key=${1?No argument.}
+  local search=$name
+  jq -M "map(select(.name == \"$search\")) | .[].$key" $status_file | sed 's/"//g'
 }
 
-function __mkconfig() {
+function __mkconfig {
   [[ -f "Terfile" ]] && {
     read -p "Terfile already exists. Overwrite? [Y]: " -n 1 -r
     echo
@@ -120,35 +154,93 @@ EOF
   exit 0
 }
 
-function __getPid() { ps aux | grep -v grep | grep -E "$1.*$2" | awk '{print $2}' || pgrep "$name"; }
+function __getPidFromName { pgrep "$name"; }
 
-function __syncExists() { grep -q "$1" "$status_file"; }
+function __syncExists { grep -q "$1" "$status_file"; }
 
-function __storeSync() { tee -a "$status_file" <<<"$name:x:$source_dir:$destination:${opt_daemon:-false}"; }
+function __syncRunning { if [[ "$(__getPidFromName)" ]]; then return 1; else return 0; fi; }
 
-function __storePid() { sed -i "/$name/ s/x/$1/" "$status_file"; }
+function __storeSync { 
+  # tee -a "$status_file" <<<"$name:x:$source_dir:$destination:${opt_daemon:-false}" > /dev/null; 
+  json_string=$( jq -n \
+		--arg sd "$source_dir" \
+		--arg dst "$destination" \
+		--arg nm "$name" \
+		--arg oe "$opt_exclude" \
+		--arg oa "$opt_append" \
+		--arg om "$opt_modify" \
+		--arg od "$opt_delete" \
+		--arg da "$opt_daemon" \
+		--arg pd "" \ '[{name: $nm, pid: $pd, source_dir: $sd, destination: $dst, daemon: $da, exclude: $oe, append: $oa, modify: $om, delete: $od}]'
+	)
 
-function __checkSync() {
-  if ! -f "$status_file"; then tee "$status_file" <<<"$cmd -- v${version:-0.0.1}"; fi
-  if __syncExists "$name"; then msg_error "Duplicate sync name. Please specify other name."; fi
+  jq ". += $json_string" $status_file | sponge $status_file
+}
+
+function __storePid { jq "map(if .name == \"$name\" then . + {"pid":\"$1\"} else . end)" $status_file | sponge $status_file; }
+
+function __removePid { __storePid ""; }
+
+function __checkSyncForDuplicates {
+  if [[ ! -f "$status_file" ]]; then tee "$status_file" <<<"[]" > /dev/null; fi
+  if __syncExists "$name"; then msg_error "Sync name: $name already exists. Please specify other name."; fi
   if __syncExists "$source_dir" && __syncExists "$destination"; then msg_error "Duplicate source and destination pair. Exiting"; fi
 }
 
-function __startSync() {
+function __syncAdd {
+  # Check for dupes
+  __checkSyncForDuplicates
+  # Then store the detail to status_file
+  [[ $opt_daemon -eq 1 ]] && __createService
+  __storeSync
+
+  msg_success "$name has been added to sync list."
+}
+
+function __startSync {
+  __storePid "$!"
   # Initial rsync
   rsync -a -z ${rsyncOpts[@]} "$source_dir" "$destination" 
   while inotifywait -e $(tr ' ' ',' <<<"${inotifyOpts[@]}") "$source_dir"; do
     rsync -a -z ${rsyncOpts[@]:-} ${rsyncFlags[@]:-} "$source_dir" "$destination"
   done &
-  __storePid "$!"
 }
 
-function __checkProcess() {
-  local _pid=`__getPid`
-  [[ "$_pid" ]] && kill -9 $_pid > /dev/null 2>&1
+function __stopSync {
+  echo
 }
 
-function __parse_options() {
+function __createService {
+  local service_file="/etc/systemd/system/${name}.service"
+  [[ -f $service_file ]] && msg_error "Service $name already exist."
+  
+  cat<<EOF > $service_file
+[Unit]
+Description= $name sync daemon
+
+[Service]
+Type=oneshot
+ExecStart=$(realpath $0) sync $name
+RemainAfterExit=true
+ExecStop=$(realpath $0) stop $name
+
+[Install]
+WantedBy=default.target
+EOF
+  msg_success "Service $name has been successfully created. You can now start it using systemctl"
+}
+
+function __verifyOptions {
+  if [[ -d $source_dir ]]; then 
+    : # do nothing
+  elif [[ -f $source_dir ]]; then 
+    : # do nothing
+  else
+    msg_error "Source path given [$source_dir] is not valid."
+  fi
+
+  [[ ! -d "$destination" ]] && msg_error "Destination path given [$destination] is not valid."
+
   [[ $verbose -eq 1 ]] && rsyncOpts+=("-v")
   [[ $opt_append -eq 1 ]] && rsyncOpts+=("--append")
   [[ $opt_delete -eq 1 ]] && { 
@@ -160,24 +252,11 @@ function __parse_options() {
     inotifyFlags+=("--exclude $opt_exclude")
     rsyncFlags+=("--exclude $opt_exclude")
   }
+
+  [[ $debug -eq 1 ]] && __debug_args
 }
 
-__arg_source=0
-__arg_dest=0
-__arg_name=0
-__arg_exlude=0
-
-opt_append=0
-opt_daemon=0
-opt_delete=0
-opt_modify=0
-opt_exclude=""
-dry_run=0
-verbose=0
-inotifyOpts=("create")
-rsyncOpts=()
-
-function __parse_terfile() {
+function __parse_terfile {
   [[ "$2" = "--debug" ]] && debug=1
   source_dir="$(get_value source_dir 1)"
   destination="$(get_value destination 1)"
@@ -188,10 +267,11 @@ function __parse_terfile() {
   opt_modify="$(get_value modify)"
   opt_delete="$(get_value delete)"
 
-  __parse_options
+  __syncAdd
 }
 
-function __parse_arguments() {
+function __parse_arguments {
+  [[ $# -eq 0 ]] && __usage_add
   while [ $# -gt 0 ]; do
     case "$1" in
       -s|--source)
@@ -289,15 +369,40 @@ function __parse_arguments() {
       *) msg_error "Unknown option: $1" ;;
     esac
   done
-  __parse_options
+
+  __syncAdd
 }
 
-function __unsync() {
+function __sync {
+  name="$1"
+  if [[ -z $name ]]; then msg_error "Please specify sync name."; fi
+  if [[ $2 = "-d" ]]; then debug=1; fi
+
+  __syncExists "$name" || msg_error "$name doesn't exist in sync list. Please add it first."
+
+  source_dir="$(get_valueJson source_dir)"
+  destination="$(get_valueJson destination)"
+  name="$(get_valueJson name)"
+  opt_exclude="$(get_valueJson exclude)"
+  opt_append="$(get_valueJson append)"
+  opt_modify="$(get_valueJson modify)"
+  opt_delete="$(get_valueJson delete)"
+  
+  __verifyOptions
+
+  # Check if it's not running yet
+  __syncRunning || msg_error "$name is already running."
+
+  # Execute
+  __startSync
+}
+
+function __unsync {
   name="${1:-}"
   [[ -z "$name" ]] && msg_error "Please specify sync name to be stopped."
 }
 
-function __debug_args() {
+function __debug_args {
   echo "Name        = $name"
   echo "Source      = $source_dir"
   echo "Destination = $destination"
@@ -312,19 +417,21 @@ function __debug_args() {
   exit
 }
 
-[[ $# -eq 0 ]] && __usage_help
+function main {
+  [[ $# -eq 0 ]] && __usage_help
+  
+  case "$1" in
+    add) shift; __parse_arguments $@ ;;
+    sync)	shift; __sync $@ ;;
+    unsync) shift; __unsync $@ ;;
+    stop) shift; __stopSync $@;;
+    status) shift; __syncStatus $@;;
+    list) shift; __list $@ ;;
+    mkconfig)	__mkconfig ;; 
+    terfile) __parse_terfile $@;;
+    help|-h|--help|-?) __usage_help ;; 
+  esac
+  
+}
 
-case "$1" in
-  sync)	shift; __parse_arguments $@ ;;
-  unsync) shift; __unsync "${1?Specify sync name to be unsynced.}" ;;
-  list) __list ;;
-  mkconfig)	__mkconfig ;;
-  terfile) __parse_terfile $@;;
-  help|-h|--help|-?) __usage_help ;; 
-esac
-
-[[ $debug -eq 1 ]] && __debug_args
-
-__checkSync
-__storeSync
-__startSync
+main $@
