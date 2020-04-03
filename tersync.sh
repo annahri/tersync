@@ -4,6 +4,9 @@ readonly cmd="${0##*/}"
 readonly terfile_file="Terfile.ini"
 readonly status_file="status"
 #readonly status_file="/var/lib/tersync/status"
+readonly log_file="output.log"
+
+exec 3>> $log_file
 
 __arg_source=0
 __arg_dest=0
@@ -103,7 +106,7 @@ function get_value {
 }
 
 function get_valueJson {
-  local key=${1?No argument.}
+  local key=${1}
   local search=$name
   jq -M "map(select(.name == \"$search\")) | .[].$key" $status_file | sed 's/"//g'
 }
@@ -154,11 +157,13 @@ EOF
   exit 0
 }
 
-function __getPidFromName { pgrep "$name"; }
+#function __getPid { ps aux | grep -v grep | grep tersync | awk '/'$name'/ {print $2}'; }
+
+function __getPid { get_valueJson pid; }
 
 function __syncExists { grep -q "$1" "$status_file"; }
 
-function __syncRunning { if [[ "$(__getPidFromName)" ]]; then return 1; else return 0; fi; }
+function __syncRunning { if [[ `__getPid` ]]; then return 0; else return 1; fi; }
 
 function __storeSync { 
   # tee -a "$status_file" <<<"$name:x:$source_dir:$destination:${opt_daemon:-false}" > /dev/null; 
@@ -183,8 +188,11 @@ function __removePid { __storePid ""; }
 
 function __checkSyncForDuplicates {
   if [[ ! -f "$status_file" ]]; then tee "$status_file" <<<"[]" > /dev/null; fi
+  #if __syncRunning; then msg_error "Sync name: $name is already running. Stop it first"; fi
   if __syncExists "$name"; then msg_error "Sync name: $name already exists. Please specify other name."; fi
-  if __syncExists "$source_dir" && __syncExists "$destination"; then msg_error "Duplicate source and destination pair. Exiting"; fi
+  local sdir=`get_valueJson source_dir`
+  local ddir=`get_valueJson destination`
+  if [[ $sdir ]] && [[ $ddir ]]; then msg_error "Duplicate source and destination pair. Exiting"; fi
 }
 
 function __syncAdd {
@@ -198,16 +206,35 @@ function __syncAdd {
 }
 
 function __startSync {
-  __storePid "$!"
   # Initial rsync
   rsync -a -z ${rsyncOpts[@]} "$source_dir" "$destination" 
-  while inotifywait -e $(tr ' ' ',' <<<"${inotifyOpts[@]}") "$source_dir"; do
-    rsync -a -z ${rsyncOpts[@]:-} ${rsyncFlags[@]:-} "$source_dir" "$destination"
+  while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") "$source_dir" 2>&1 >&3; do
+    rsync -a -z ${rsyncOpts[@]:-} ${rsyncFlags[@]:-} "$source_dir" "$destination" >&3
   done &
+  __storePid "$!"
 }
 
 function __stopSync {
-  echo
+  name="$1"
+  if [[ -z $name ]]; then msg_error "Please specify sync name to be stopped."; fi
+  local force=0 flag="$2" pid=$(__getPid)
+  case "$flag" in
+    -f) force=1 ;;
+    *) : ;;
+  esac
+
+  if [[ $force -ne 1 ]]; then __syncExists "$name" || msg_error "$name doesn't exist in sync list. Please add it first."; fi
+  if [[ -z $pid ]]; then msg_error "$name is not running."; fi
+
+  msg_info "About to terminate $pid"
+  if kill -9 $pid > /dev/null 2>&1; then
+    __removePid
+    msg_success "$name is successfully stopped."
+  else
+    msg_error "Unable to terminate process $name."
+  fi
+
+  exit 0
 }
 
 function __createService {
@@ -391,7 +418,11 @@ function __sync {
   __verifyOptions
 
   # Check if it's not running yet
-  __syncRunning || msg_error "$name is already running."
+  if __syncRunning; then 
+    # Check ps
+    local _pid=$(__getPid)
+    if kill -0 $_pid 2> /dev/null; then msg_error "$name is already running."; fi
+  fi
 
   # Execute
   __startSync
@@ -422,8 +453,8 @@ function main {
   
   case "$1" in
     add) shift; __parse_arguments $@ ;;
-    sync)	shift; __sync $@ ;;
-    unsync) shift; __unsync $@ ;;
+    start)	shift; __sync $@ ;;
+    remove) shift; __unsync $@ ;;
     stop) shift; __stopSync $@;;
     status) shift; __syncStatus $@;;
     list) shift; __list $@ ;;
