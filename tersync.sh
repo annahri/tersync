@@ -13,8 +13,20 @@ exec 3>> $log_file
 
 # Check for dependencies
 #  sponge => moreutils
+#  inotifywait => inotifytools
+#  rsync
 if ! hash sponge > /dev/null 2>&1; then
   echo "Command not found: sponge. Please install moreutils."
+  exit 1
+fi
+
+if ! hash rsync > /dev/null 2>&1; then
+  echo "Command not found: rsync. Please install rsync."
+  exit 1
+fi
+
+if ! hash inotifywait > /dev/null 2>&1; then
+  echo "Command not found: inotifywait. Please install inotifytools."
   exit 1
 fi
 
