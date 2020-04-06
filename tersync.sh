@@ -372,14 +372,14 @@ function __verifyOptions {
 }
 
 function __parse_config {
-  case "${2:-}" in
+  case "${1:-}" in
     -d|--debug) debug=1;;
     *) :;;
   esac
   source_dir="$(get_value source_dir 1)"
   destination="$(get_value destination 1)"
   name="$(get_value name 1)"
-  daemon="$(get_value daemon)"
+  opt_daemon="$(get_value daemon)"
   [[ "$(get_value exclude)" -eq 1 ]] && opt_exclude="$(get_value exclude_pattern)"
   opt_append="$(get_value append)"
   opt_modify="$(get_value modify)"
