@@ -54,13 +54,15 @@ function __usage_help {
 	$cmd
 
 	USAGE: 
-	  $cmd sync -s /src/dir/logs/ -d /dst/dir/frontend/ --name "Frontend" --exclude "PATTERN"
-	  $cmd sync -s=/src/dir/logs/ -d=/dst/dir/backend/ -n=Backend
-	  $cmd sync -nCoreSync -d/dst/dir/ -s/source/dir 
+	  $cmd add -s /src/dir/logs/ -d /dst/dir/frontend/ --name "Frontend" --exclude "PATTERN"
+	  $cmd add -s=/src/dir/logs/ -d=/dst/dir/backend/ -n=Backend
+	  $cmd add -nCoreSync -d/dst/dir/ -s/source/dir 
 
 	  $cmd mkconfig
 	  $cmd config 
-	  $cmd unsync Frontend-Sync
+    $cmd start Frontend-Sync
+    $cmd stop Frontend-Sync
+	  $cmd rm Frontend-Sync
 		
 	COMMANDS:
   add [-s <source>] [-d <dst>] [-n <name>] ...
@@ -71,9 +73,9 @@ function __usage_help {
       Remove a sync from sync list
   stop [name]
       Stop a running sync
-  ps
+  ps < -a >
       List running syncs
-  mkconfig
+  mkconfig 
       Create Terfile with unassigned parameters
   config
       Load parameters from $config_file in cwd
@@ -107,7 +109,32 @@ function __usage_help {
 
 function __usage_add {
   cat <<EOF
-  add
+$cmd add [options]
+
+Options:
+  -s --source  [DIR]
+      Source directory to be synced
+  -d --destination  [DIR]
+      Destination directory, self-explanatory
+  -n --name  [NAME]         
+      Syncronization name. 
+  -e --exclude  [PATTERN]      
+      Exclude pattern.
+  --daemon
+      Create sync entry as daemon.
+  --append                  
+      Incremental sync, instead of whole file syncronization.
+  --modify                  
+      Trigger sync on any file modifications.
+  --delete                  
+      Deletes any extraneous file on destination directory.
+  -v --verbose
+      Self-explanatory.
+
+Examples:
+  $cmd add -d/dst/ -s/src/ -e'pattern' -nname
+  $cmd add -s=/src/ -d=/dst/ -e='pattern' -n=name
+  $cmd add --source=/sr/ --destination=/dst/ --except='*.tar.xz' --name="Name" --append --modify --delete --daemon --verbose
 EOF
   exit 0
 }
@@ -299,6 +326,8 @@ function __syncStart {
     __rsync
   done &
   __storePid "$!"
+
+  msg_success "$name is started successfully."
 }
 
 function __syncStop {
