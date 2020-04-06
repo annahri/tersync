@@ -320,9 +320,9 @@ function __syncList {
   local json_string=$(jq -r '.[] | "\(.name),\(.pid),\(.source_dir),\(.destination)" ' $status_file)
   local header="Sync Name,PID,Source,Destination"
   if [[ $all -eq 0 ]]; then
-    awk -F, 'BEGIN { OFS=FS }; {if ($2==""){$0=""} print}' <<<"$json_string" | column -t -s, -N "$header"
+    awk -F, -v header="$header" 'BEGIN { print "$header"; OFS=FS }; {if ($2==""){$0=""} print}' <<<"$json_string" | column -t -s, 
   else
-    awk -F, 'BEGIN { OFS=FS }; {if ($2==""){$2="null"} print}' <<<"$json_string" | column -t -s, -N "$header"
+    awk -F, -v header="$header" 'BEGIN { print "$header"; OFS=FS }; {if ($2==""){$2="null"} print}' <<<"$json_string" | column -t -s, 
   fi
 }
 
