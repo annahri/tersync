@@ -6,9 +6,9 @@ readonly cmd="${0##*/}"
 readonly config_file="config.ini"
 #readonly status_file="$HOME/.local/share/tersync/status"
 readonly status_file="/var/lib/tersync/status"
-readonly log_file="output.log"
+readonly log_file="/var/log/tersync.log"
 
-#exec 3>> $log_file
+exec 3>> $log_file
 
 # Check for dependencies
 #  sponge => moreutils
