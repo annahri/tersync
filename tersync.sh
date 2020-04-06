@@ -372,7 +372,10 @@ function __verifyOptions {
 }
 
 function __parse_config {
-  [[ "${2:-}" = "--debug" ]] && debug=1
+  case "${2:-}" in
+    -d|--debug) debug=1;;
+    *) :;;
+  esac
   source_dir="$(get_value source_dir 1)"
   destination="$(get_value destination 1)"
   name="$(get_value name 1)"
