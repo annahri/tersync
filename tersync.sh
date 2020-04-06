@@ -2,6 +2,7 @@
 
 set -o nounset
 
+readonly SCRIPTPATH="$( cd "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 readonly cmd="${0##*/}"
 readonly config_file="config.ini"
 #readonly status_file="$HOME/.local/share/tersync/status"
@@ -337,9 +338,9 @@ Description= $name sync daemon
 
 [Service]
 Type=oneshot
-ExecStart=$cmd start $name
+ExecStart=$SCRIPTPATH/$cmd start $name
 RemainAfterExit=true
-ExecStop=$cmd stop $name
+ExecStop=$SCRIPTPATH/$cmd stop $name
 
 [Install]
 WantedBy=default.target
