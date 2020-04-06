@@ -322,7 +322,7 @@ function __syncStart {
   # function __rsync { rsync -avvvz --exclude "*.log" $source_dir $destination ;}
 
   __rsync
-  while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") "$source_dir" 2>&1 >&3; do
+  while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") ${inotifyFlags[@]} "$source_dir" 2>&1 >&3; do
     __rsync
   done &
   __storePid "$!"
@@ -408,7 +408,7 @@ function __verifyOptions {
     rsyncOpts+=("--delete")
   }
   [[ $opt_modify -eq 1 ]] && inotifyOpts+=("modify")
-  [[ "$opt_exclude" ]] && inotifyFlags+=("--exclude $opt_exclude")
+  [[ "$opt_exclude" ]] && inotifyFlags+=(--exclude `printf '%q' $opt_exclude`)
 
   [[ $debug -eq 1 ]] && __debug_args
 }
