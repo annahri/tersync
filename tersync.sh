@@ -10,6 +10,13 @@ readonly log_file="output.log"
 
 #exec 3>> $log_file
 
+# Check for dependencies
+#  sponge => moreutils
+if ! hash sponge > /dev/null 2>&1; then
+  echo "Command not found: sponge. Please install moreutils."
+  exit 1
+fi
+
 __arg_source=0
 __arg_dest=0
 __arg_name=0
