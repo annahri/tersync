@@ -39,6 +39,7 @@ name=
 source_dir=
 destination=
 opt_append=0
+opt_create=0
 opt_daemon=0
 opt_delete=0
 opt_modify=0
@@ -46,7 +47,7 @@ opt_exclude=""
 debug=0
 dry_run=0
 opt_verbose=0
-inotifyOpts=("create")
+inotifyOpts=()
 __checkProcessyncOpts=()
 
 function __usage_help {
@@ -54,9 +55,9 @@ function __usage_help {
 	$cmd
 
 	USAGE: 
-	  $cmd add -s /src/dir/logs/ -d /dst/dir/frontend/ --name "Frontend" --exclude "PATTERN"
-	  $cmd add -s=/src/dir/logs/ -d=/dst/dir/backend/ -n=Backend
-	  $cmd add -nCoreSync -d/dst/dir/ -s/source/dir 
+	  $cmd add -S /src/dir/logs/ -D /dst/dir/frontend/ --name "Frontend" --exclude "PATTERN" --modify
+	  $cmd add -S=/src/dir/logs/ -D=/dst/dir/backend/ -N=Backend -m
+	  $cmd add -NCoreSync -D/dst/dir/ -S/source/dir -m
 
 	  $cmd mkconfig
 	  $cmd config 
@@ -65,7 +66,7 @@ function __usage_help {
 	  $cmd rm Frontend-Sync
 		
 	COMMANDS:
-  add [-s <source>] [-d <dst>] [-n <name>] ...
+  add [-S <source>] [-D <dst>] [-N <name>] ...
       Add a sync to sync entry
   start [name]
       Start a specified sync
@@ -83,22 +84,26 @@ function __usage_help {
       Display this message
 
 	OPTIONS:
-  -s --source  [DIR]
+  -S --source  [DIR]
       Source directory to be synced
-  -d --destination  [DIR]
+  -D --destination  [DIR]
       Destination directory, self-explanatory
-  -n --name  [NAME]         
+  -N --name  [NAME]         
       Syncronization name. 
-  -e --exclude  [PATTERN]      
+  -E --exclude  [PATTERN]      
       Exclude pattern.
-  --append                  
+  -a --append                  
       Incremental sync, instead of whole file syncronization.
-  --modify                  
-      Trigger sync on any file modifications.
-  --delete                  
-      Deletes any extraneous file on destination directory.
   -v --verbose
       Self-explanatory.
+
+  TRIGGERS:
+  -m --modify                  
+      Trigger sync on any file modification.
+  -c --create                  
+      Trigger sync on any file creation.
+  -d --delete                  
+      Trigger sync on any file deletion.
 
   -h --help
       Display this info message.
@@ -124,6 +129,8 @@ Options:
       Create sync entry as daemon.
   --append                  
       Incremental sync, instead of whole file syncronization.
+  --create                  
+      Trigger sync on any file creation.
   --modify                  
       Trigger sync on any file modifications.
   --delete                  
@@ -203,6 +210,10 @@ exclude_pattern =
 ; Value [ true, false ]
 append = false
 
+; Trigger sync on file creation
+; Value [ true, false ]
+create = true
+
 ; Trigger sync on file modify
 ; Value [ true, false ]
 modify = false
@@ -237,10 +248,11 @@ function __storeSync {
 		--arg oe "$opt_exclude" \
 		--arg oa "$opt_append" \
 		--arg om "$opt_modify" \
+		--arg cr "$opt_create" \
 		--arg od "$opt_delete" \
 		--arg da "$opt_daemon" \
 		--arg vb "$opt_verbose" \
-		--arg pd "" \ '[{name: $nm, pid: $pd, source_dir: $sd, destination: $dst, daemon: $da, exclude: $oe, append: $oa, modify: $om, delete: $od, verbose: $vb}]'
+		--arg pd "" \ '[{name: $nm, pid: $pd, source_dir: $sd, destination: $dst, daemon: $da, exclude: $oe, append: $oa, create: $cr, modify: $om, delete: $od, verbose: $vb}]'
 	)
 
   if jq ". += $json_string" $status_file | sponge $status_file; then
@@ -291,6 +303,7 @@ function __syncRemove {
   local name=$1
   [[ -z $name ]] && msg_error "Please specify sync name to be deleted from list."
   local pid=$(__getPid)
+  local isDaemon=$(get_valueJson daemon)
   # Check if exists
   __syncExists $name || msg_error "$name doesn't exist in sync list. Nothing to remove"
   
@@ -299,10 +312,20 @@ function __syncRemove {
     read -p "Kill it? [N]" -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then 
-      __syncStop $name; 
+      if [[ $isDaemon -eq 1 ]]; then
+        __syncStop $name --daemon
+      else
+        __syncStop $name
+      fi
     else
       exit 0
     fi
+  fi
+
+  if [[ ${isDaemon:-0} ]]; then
+    local servicePath="/etc/systemd/system/$name.service"
+    msg_info "Removing $name.service from $servicePath"
+    rm -f $servicePath && systemctl daemon-reload
   fi
 
   __subtractSync $name || msg_error "Error occured."
@@ -311,6 +334,7 @@ function __syncRemove {
 }
 
 function __syncStart {
+
   # Initial rsync
   function __rsync { 
     if [[ $opt_exclude ]]; then
@@ -325,9 +349,14 @@ function __syncStart {
   while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") ${inotifyFlags[@]} "$source_dir" 2>&1 >&3; do
     __rsync
   done &
-  __storePid "$!"
+  local exitStatus=$? pid=$!
 
-  msg_success "$name is started successfully."
+  if [[ $exitStatus -ne 0 ]]; then
+    msg_error "Error occurred. Unable to start $name"
+  else
+    __storePid "$pid"
+    msg_success "$name is started successfully."
+  fi
 }
 
 function __syncStop {
@@ -336,8 +365,13 @@ function __syncStop {
   local force=0 flag="${2:-}" pid=$(__getPid)
   case "$flag" in
     -f) force=1 ;;
+    --svc|--daemon) isDaemon=1;;
     *) : ;;
   esac
+
+  if [[ ${isDaemon:-0} -ne 1 ]] && [[ $(get_valueJson daemon) -eq 1 ]]; then
+    msg_error "$name must be stopped via 'systemctl stopped $name'!"
+  fi
 
   if [[ $force -ne 1 ]]; then __syncExists "$name" || msg_error "$name doesn't exist in sync list. Please add it first."; fi
   if [[ -z $pid ]]; then msg_error "$name is not running."; fi
@@ -347,6 +381,11 @@ function __syncStop {
     __removePid
     msg_success "$name is successfully stopped."
   else
+    if ! kill -0 $pid > /dev/null 2>&1; then
+      __removePid
+      msg_info "Process no longer exists. Status file cleaned"
+      exit 0
+    fi
     msg_error "Unable to terminate process $name."
   fi
 }
@@ -359,16 +398,17 @@ function __syncList {
   esac
 
   [[ ! -s $status_file ]] && msg_error "No entries."
-  local json_string=$(jq -r '.[] | "\(.name),\(.pid),\(.source_dir),\(.destination)" ' $status_file)
-  local header="Sync Name,PID,Source,Destination"
+  local json_string=$(jq -r '.[] | "\(.name),\(.pid),\(.source_dir),\(.destination),\(.daemon)" ' $status_file | sort)
+  local header="Name,PID,Source,Destination,Type,Status"
   if [[ $all -eq 0 ]]; then
-    awk -F, -v header="$header" 'BEGIN { print header; OFS=FS }; {if ($2==""){$0=""} print}' <<<"$json_string" | column -t -s, 
+    awk -F, -v header="$header" 'BEGIN { print header; OFS=FS }; { if (NF>0) { if ($2=="") $0=""; else { $6="syncing"; if ($5==1) $5="daemon"; else $5="normal"; }; }; print }' <<<"$json_string" | column -t -s,
   else
-    awk -F, -v header="$header" 'BEGIN { print header; OFS=FS }; {if ($2==""){$2="null"} print}' <<<"$json_string" | column -t -s, 
+    awk -F, -v header="$header" 'BEGIN { print header; OFS=FS }; { if (NF>0) { if ($2=="") {$2="-";$6="stopped"} else $6="syncing"; if ($5==1) $5="daemon"; else $5="normal"; }; print}' <<<"$json_string" | column -t -s, 
   fi
 }
 
 function __createService {
+  if ! hash systemctl > /dev/null 2>&1; then msg_error "This system is not using systemd."; fi
   [[ $EUID -ne 0 ]] && msg_error "Please run as administrative user."
   [[ -z $(whereis $cmd | awk '{print $2}') ]] && msg_error "$cmd is not installed correctly."
   local service_file="/etc/systemd/system/${name}.service"
@@ -379,12 +419,12 @@ Description= $name sync daemon
 
 [Service]
 Type=oneshot
-ExecStart=$SCRIPTPATH/$cmd start $name
+ExecStart=$SCRIPTPATH/$cmd start $name --daemon
 RemainAfterExit=true
-ExecStop=$SCRIPTPATH/$cmd stop $name
+ExecStop=$SCRIPTPATH/$cmd stop $name --daemon
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   msg_success "Service $name has been successfully created."
@@ -407,6 +447,7 @@ function __verifyOptions {
     inotifyOpts+=("delete")
     rsyncOpts+=("--delete")
   }
+  [[ $opt_create -eq 1 ]] && inotifyOpts+=("create")
   [[ $opt_modify -eq 1 ]] && inotifyOpts+=("modify")
   [[ "$opt_exclude" ]] && inotifyFlags+=(--exclude `printf '%q' $opt_exclude`)
 
@@ -425,6 +466,7 @@ function __parse_config {
   [[ "$(get_value exclude)" -eq 1 ]] && opt_exclude="$(get_value exclude_pattern)"
   opt_append="$(get_value append)"
   opt_modify="$(get_value modify)"
+  opt_create="$(get_value create)"
   opt_delete="$(get_value delete)"
   opt_verbose="$(get_value verbose)"
 
@@ -435,109 +477,122 @@ function __parse_arguments {
   [[ $# -eq 0 ]] && __usage_add
   while [ $# -gt 0 ]; do
     case "$1" in
-      -s|--source)
+      -S|--source)
         [[ $__arg_source -eq 1 ]] && exit 2 
         source_dir="${2:-}"
         [[ -z "$source_dir" ]] && msg_error "Please specify source dir."
         __arg_source=1
         shift 2
         ;;
-      -s=*)
+      -S=*)
         [[ $__arg_source -eq 1 ]] && exit 2 
         [[ -z "${1#*=}" ]] && msg_error "Please specify source dir."
         source_dir="${1#*=}"
         __arg_source=1
         shift
         ;;
-      -s*)
+      -S*)
         [[ $__arg_source -eq 1 ]] && exit 2 
-        [[ -z "${1#-s}" ]] && msg_error "Please specify source dir."
-        source_dir="${1#-s}"
+        [[ -z "${1#-S}" ]] && msg_error "Please specify source dir."
+        source_dir="${1#-S}"
         __arg_source=1
         shift
         ;;
-      -d|--destination) 
+      -D|--destination) 
         [[ $__arg_dest -eq 1 ]] && exit 2 
         destination="${2:-}"
         [[ -z "$destination" ]] && msg_error "Please specify destination dir/host."
         __arg_dest=1
         shift 2
         ;;
-      -d=*) 
+      -D=*) 
         [[ $__arg_dest -eq 1 ]] && exit 2 
         [[ -z "${1#*=}" ]] && msg_error "Please specify destination dir/host."
         destination="${1#*=}"
         __arg_dest=1
         shift
         ;;
-      -d*) 
+      -D*) 
         [[ $__arg_dest -eq 1 ]] && exit 2 
-        [[ -z "${1#-d}" ]] && msg_error "Please specify destination dir/host."
-        destination="${1#-d}"
+        [[ -z "${1#-D}" ]] && msg_error "Please specify destination dir/host."
+        destination="${1#-D}"
         __arg_dest=1
         shift		
         ;;
-      -n|--name) 
+      -N|--name) 
         [[ $__arg_name -eq 1 ]] && exit 2 
         name="${2:-}"
         [[ -z "$name" ]] && msg_error "Please specify sync name."
         __arg_name=1
         shift 2
         ;;
-      -n=*) 
+      -N=*) 
         [[ $__arg_name -eq 1 ]] && exit 2 
         [[ -z "${1#*=}" ]] && msg_error "Please specify sync name."
         name="${1#*=}"
         __arg_name=1
         shift
         ;;
-      -n*) 
+      -N*) 
         [[ $__arg_name -eq 1 ]] && exit 2 
-        [[ -z "${1#-n}" ]] && msg_error "Please specify sync name."
-        name="${1#-n}"
+        [[ -z "${1#-N}" ]] && msg_error "Please specify sync name."
+        name="${1#-N}"
         __arg_name=1
         shift
         ;;
-      -e|--exclude)
+      -E|--exclude)
         [[ $__arg_exclude -eq 1 ]] && exit 2
         opt_exclude="${2:-}"
         [[ -z "$opt_exclude" ]] && msg_error "Please specify exclude pattern."
         __arg_exclude=1
         shift 2
         ;;
-      -e=*)
+      -E=*)
         [[ $__arg_exclude -eq 1 ]] && exit 2
         [[ -z "${1#*=}" ]] && msg_error "Please specify exclude pattern."
         opt_exclude="${1#*=}"
         __arg_exclude=1
         shift
         ;;
-      -e*)
+      -E*)
         [[ $__arg_exclude -eq 1 ]] && exit 2
-        [[ -z "${1#-e}" ]] && msg_error "Please specify exclude pattern."
-        opt_exclude="${1#-e}"
+        [[ -z "${1#-E}" ]] && msg_error "Please specify exclude pattern."
+        opt_exclude="${1#-E}"
         __arg_exclude=1
         shift
         ;;
-      --append)			opt_append=1;	shift ;;
-      --daemon)     opt_daemon=1; shift ;;
-      --delete)			opt_delete=1;	shift	;;
-      --dry-run)		dry_run=1;		shift ;;
-      --modify)			opt_modify=1; shift ;;
+      -a|--append)	opt_append=1;	shift ;;
+      -c|--create)	opt_create=1;	shift ;;
+      -d|--delete)	opt_delete=1;	shift	;;
+      -m|--modify)	opt_modify=1; shift ;;
       -v|--verbose) verbose=1;		shift ;;
-      -?|-h|--help) __usage_help				;;
+      --daemon)     opt_daemon=1; shift ;;
+      --dry-run)		dry_run=1;		shift ;;
       --debug)      debug=1;      shift ;;
+      -?|-h|--help) __usage_help				;;
       *) msg_error "Unknown option: $1" ;;
     esac
   done
+
+  if [[ $opt_modify -eq 0 ]] && [[ $opt_delete -eq 0 ]] && [[ $opt_create -eq 0 ]]; then
+    msg_error "Please specify at least 1 trigger: create,modify,delete"
+  fi
+
   __syncAdd "$name"
 }
 
 function __sync {
   name="$1"
   if [[ -z $name ]]; then msg_error "Please specify sync name."; fi
-  if [[ ${2:-} = "-d" ]]; then debug=1; fi
+  case "${2:-}" in
+    -d|--debug) debug=1;;
+    --svc|--daemon) isDaemon=1;;
+    *) :;;
+  esac
 
+  if [[ ${isDaemon:-0} -ne 1 ]] && [[ $(get_valueJson daemon) -eq 1 ]]; then
+    msg_error "$name must be started via 'systemctl start $name'!"
+  fi
   __syncExists "$name" || msg_error "$name doesn't exist in sync list. Please add it first."
 
   source_dir="$(get_valueJson source_dir)"
@@ -546,6 +601,7 @@ function __sync {
   opt_exclude="$(get_valueJson exclude)"
   opt_append="$(get_valueJson append)"
   opt_modify="$(get_valueJson modify)"
+  opt_create="$(get_valueJson create)"
   opt_delete="$(get_valueJson delete)"
   
   __verifyOptions
