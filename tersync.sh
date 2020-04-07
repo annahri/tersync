@@ -61,8 +61,8 @@ function __usage_help {
 
 	  $cmd mkconfig
 	  $cmd config 
-    $cmd start Frontend-Sync
-    $cmd stop Frontend-Sync
+	  $cmd start Frontend-Sync 
+	  $cmd stop Frontend-Sync
 	  $cmd rm Frontend-Sync
 		
 	COMMANDS:
@@ -97,7 +97,7 @@ function __usage_help {
   -v --verbose
       Self-explanatory.
 
-  TRIGGERS:
+	TRIGGERS:
   -m --modify                  
       Trigger sync on any file modification.
   -c --create                  
@@ -346,7 +346,7 @@ function __syncStart {
   # function __rsync { rsync -avvvz --exclude "*.log" $source_dir $destination ;}
 
   __rsync
-  while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") ${inotifyFlags[@]} "$source_dir" 2>&1 >&3; do
+  while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") ${inotifyFlags[@]:-} "$source_dir" 2>&1 >&3; do
     __rsync
   done &
   local exitStatus=$? pid=$!
@@ -370,7 +370,7 @@ function __syncStop {
   esac
 
   if [[ ${isDaemon:-0} -ne 1 ]] && [[ $(get_valueJson daemon) -eq 1 ]]; then
-    msg_error "$name must be stopped via 'systemctl stopped $name'!"
+    msg_error "$name must be stopped via 'systemctl stop $name'!"
   fi
 
   if [[ $force -ne 1 ]]; then __syncExists "$name" || msg_error "$name doesn't exist in sync list. Please add it first."; fi
