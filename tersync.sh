@@ -20,6 +20,11 @@ if ! hash sponge > /dev/null 2>&1; then
   exit 1
 fi
 
+if ! hash jq > /dev/null 2>&1; then
+  echo "Command not found: jq. Please install jq."
+  exit 1
+fi
+
 if ! hash rsync > /dev/null 2>&1; then
   echo "Command not found: rsync. Please install rsync."
   exit 1
@@ -645,6 +650,7 @@ function main {
     mk|mkconfig)	__mkconfig ;; 
     cf|config) __parse_config $@;;
     help|-h|--help|-?) __usage_help ;; 
+    *) msg_error "Unknown command: $1";;
   esac
   
 }
