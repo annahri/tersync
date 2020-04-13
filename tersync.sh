@@ -7,9 +7,8 @@ readonly cmd="${0##*/}"
 readonly config_file="config.ini"
 #readonly status_file="$HOME/.local/share/tersync/status"
 readonly status_file="/var/lib/tersync/status"
-readonly log_file="/var/log/tersync.log"
+readonly log_file="/var/log/tersync"
 
-exec 3>> $log_file
 
 # Check for dependencies
 #  sponge => moreutils
@@ -340,6 +339,9 @@ function __syncRemove {
 
 function __syncStart {
     local list_file="/var/lib/tersync/$name.list"
+    local rsync_opts="-rptD"
+    exec 3>> $log_file-$name.log
+
     if [[ $opt_exclude ]]; then
         find $source_dir -type f -not -name "$opt_exclude" -exec basename {} \; \
             | tee $list_file > /dev/null
@@ -347,9 +349,9 @@ function __syncStart {
 
     function __rsync {
         if [[ -f $list_file ]]; then
-            rsync -pt -z ${rsyncOpts[@]:-} --files-from=$list_file $source_dir $destination
+            rsync $rsync_opts -z ${rsyncOpts[@]:-} --files-from=$list_file $source_dir $destination
         else
-            rsync -pt -z ${rsyncOpts[@]:-} $source_dir $destination
+            rsync $rsync_opts -z ${rsyncOpts[@]:-} $source_dir $destination
         fi
 
         #if [[ $opt_exclude ]]; then
@@ -360,18 +362,18 @@ function __syncStart {
     }
 # function __rsync { rsync -avvvz --exclude "*.log" $source_dir $destination ;}
 
-__rsync
-while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") ${inotifyFlags[@]:-} "$source_dir" 2>&1 >&3; do
     __rsync
-done &
-local exitStatus=$? pid=$!
+    while inotifywait -qe $(tr ' ' ',' <<<"${inotifyOpts[@]}") ${inotifyFlags[@]:-} "$source_dir" 2>&1 >&3; do
+        __rsync
+    done &
+    local exitStatus=$? pid=$!
 
-if [[ $exitStatus -ne 0 ]]; then
-    msg_error "Error occurred. Unable to start $name"
-else
-    __storePid "$pid"
-    msg_success "$name is started successfully."
-fi
+    if [[ $exitStatus -ne 0 ]]; then
+        msg_error "Error occurred. Unable to start $name"
+    else
+        __storePid "$pid"
+        msg_success "$name is started successfully."
+    fi
 }
 
 function __syncStop {
@@ -489,7 +491,7 @@ function __parse_config {
 }
 
 function __parse_arguments {
-    [[ $# -eq 0 ]] && __usage_add
+    if [[ $# -eq 0 ]]; then __usage_add; fi
     while [ $# -gt 0 ]; do
         case "$1" in
             -S|--source)
